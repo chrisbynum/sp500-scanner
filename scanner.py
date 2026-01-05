@@ -10,7 +10,14 @@ def get_sp500_tickers():
     """Get list of S&P 500 tickers"""
     # Using a Wikipedia table to get S&P 500 tickers
     url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-    tables = pd.read_html(url)
+    
+    # Add headers to avoid being blocked as a bot
+    import requests
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+    
+    tables = pd.read_html(requests.get(url, headers=headers).content)
     sp500_table = tables[0]
     tickers = sp500_table['Symbol'].tolist()
     # Clean up tickers (remove dots, etc.)
