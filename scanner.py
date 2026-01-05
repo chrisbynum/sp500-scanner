@@ -34,6 +34,22 @@ def check_bullish_engulfing(ticker):
         stock = yf.Ticker(ticker)
         df = stock.history(period='60d')
         
+        # Get company info
+        info = stock.info
+        company_name = info.get('longName', ticker)
+        sector = info.get('sector', 'N/A')
+        business_summary = info.get('longBusinessSummary', '')
+        
+        # Truncate business summary to 1-2 sentences (around 150 chars)
+        if business_summary:
+            sentences = business_summary.split('. ')
+            if len(sentences) > 1:
+                business_summary = '. '.join(sentences[:2]) + '.'
+            if len(business_summary) > 200:
+                business_summary = business_summary[:197] + '...'
+        else:
+            business_summary = 'No description available.'
+        
         if len(df) < 25:  # Need enough data
             return None
         
@@ -100,34 +116,46 @@ def check_bullish_engulfing(ticker):
         # Calculate targets and stops
         atr = last_day['ATR']
         entry_price = current_price
-        target_price = entry_price + (2.5 * atr)  # 2.5x ATR target
+        
+        # Multiple targets for quick exits
+        target_1r = entry_price + (1.5 * atr)  # Quick 1.5R target (3-5 days)
+        target_2r = entry_price + (2.5 * atr)  # Extended 2.5R target (5-10 days)
+        
         stop_loss = last_day['Low'] - (1.5 * atr)  # Below engulfing low with buffer
         
         # Calculate weekly resistance (approximate using recent highs)
         weekly_high = df.tail(20)['High'].max()
         
-        # Get option expiration suggestions (2-4 weeks out)
+        # Get option expiration suggestions (1-2 weeks out for quick trades)
         today = datetime.now()
         exp_dates = get_option_expirations(today)
         
-        # Suggest strike prices
-        strikes = suggest_strikes(current_price, target_price)
+        # Suggest strike prices (emphasize ATM for quick moves)
+        strikes = suggest_strikes(current_price, target_1r)
+        
+        # Calculate expected profit % if target hit in 3 days
+        expected_profit = calculate_expected_profit(current_price, target_1r)
         
         return {
             'ticker': ticker,
+            'company_name': company_name,
+            'sector': sector,
+            'description': business_summary,
             'rating': rating,
             'current_price': round(current_price, 2),
             'entry_price': round(entry_price, 2),
-            'target_price': round(target_price, 2),
+            'target_quick': round(target_1r, 2),  # 1.5R for 3-5 day exit
+            'target_extended': round(target_2r, 2),  # 2.5R if holding longer
             'stop_loss': round(stop_loss, 2),
             'weekly_resistance': round(weekly_high, 2),
             'body_size_pct': round(body_size_pct, 2),
             'volume_ratio': round(volume_ratio, 2),
             'distance_from_ma50': round(distance_from_ma, 1),
             'atr': round(atr, 2),
-            'red_days_before': red_days,
             'exp_dates': exp_dates,
             'suggested_strikes': strikes,
+            'expected_profit_pct': expected_profit,
+            'engulfing_low': round(last_day['Low'], 2),
             'date': last_day.name.strftime('%Y-%m-%d')
         }
         
@@ -178,25 +206,25 @@ def calculate_rating(body_size_pct, volume_ratio, distance_from_ma):
         return 1
 
 def get_option_expirations(today):
-    """Generate suggested option expiration dates (2-4 weeks out)"""
+    """Generate suggested option expiration dates (1-2 weeks out for quick trades)"""
     expirations = []
     
-    # Find next 3 Fridays (typical expiration day)
+    # Find next Fridays within 7-14 days (optimal for 3-4 day holds)
     days_ahead = 0
     while len(expirations) < 4:
         days_ahead += 1
         future_date = today + timedelta(days=days_ahead)
         
-        # Check if it's a Friday and within 2-4 week range
+        # Check if it's a Friday and within 1-2 week range
         if future_date.weekday() == 4:  # Friday
             days_diff = (future_date - today).days
-            if 10 <= days_diff <= 35:
+            if 3 <= days_diff <= 14:  # 1-2 weeks out
                 expirations.append(future_date.strftime('%Y-%m-%d'))
     
-    return expirations[:3]  # Return top 3
+    return expirations[:2]  # Return top 2 (next 2 Fridays)
 
 def suggest_strikes(current_price, target_price):
-    """Suggest option strike prices"""
+    """Suggest option strike prices (emphasize ATM for quick moves)"""
     # Round to nearest $2.50 or $5 depending on price
     if current_price < 50:
         increment = 2.5
@@ -211,9 +239,19 @@ def suggest_strikes(current_price, target_price):
     
     return {
         'ITM': round(itm_strike, 2),
-        'ATM': round(atm_strike, 2),
+        'ATM': round(atm_strike, 2),  # PRIMARY recommendation
         'OTM': round(otm_strike, 2)
     }
+
+def calculate_expected_profit(entry_price, target_price):
+    """Calculate expected profit % if stock hits target in 3-4 days"""
+    stock_move_pct = ((target_price - entry_price) / entry_price) * 100
+    
+    # Rough estimate: ATM options move ~0.6-0.7 delta initially
+    # On short timeframe with less time decay, approximate 2.5-3x leverage
+    option_profit_estimate = stock_move_pct * 2.5
+    
+    return round(option_profit_estimate, 1)
 
 def format_email_body(signals):
     """Format the signals into an HTML email"""
@@ -224,121 +262,134 @@ def format_email_body(signals):
     # Sort by rating (highest first)
     signals_sorted = sorted(signals, key=lambda x: x['rating'], reverse=True)
     
+    # Group by sector to show trends
+    sectors = {}
+    for signal in signals_sorted:
+        sector = signal['sector']
+        if sector not in sectors:
+            sectors[sector] = 0
+        sectors[sector] += 1
+    
+    sector_summary = ", ".join([f"{sector} ({count})" for sector, count in sorted(sectors.items(), key=lambda x: x[1], reverse=True)])
+    
     html = """
     <html>
     <head>
         <style>
-            body { font-family: Arial, sans-serif; }
+            body { font-family: Arial, sans-serif; max-width: 900px; margin: 0 auto; }
             .signal { 
                 border: 2px solid #ddd; 
-                margin: 20px 0; 
-                padding: 15px; 
+                margin: 15px 0; 
+                padding: 12px; 
                 border-radius: 8px;
                 background-color: #f9f9f9;
             }
             .rating-5 { border-color: #FFD700; background-color: #FFFACD; }
             .rating-4 { border-color: #87CEEB; background-color: #F0F8FF; }
             .rating-3 { border-color: #90EE90; background-color: #F0FFF0; }
-            .header { background-color: #4CAF50; color: white; padding: 10px; }
-            .stars { color: #FFD700; font-size: 24px; }
-            table { width: 100%; border-collapse: collapse; margin: 10px 0; }
-            td { padding: 8px; }
-            .label { font-weight: bold; width: 40%; }
-            h1 { color: #333; }
-            h2 { color: #4CAF50; margin-top: 0; }
+            .header { background-color: #4CAF50; color: white; padding: 10px; border-radius: 5px; }
+            .stars { color: #FFD700; font-size: 20px; display: inline; }
+            .company-info { background-color: #f0f0f0; padding: 8px; border-radius: 5px; margin: 8px 0; font-size: 13px; }
+            .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0; font-size: 13px; }
+            .metric { background-color: white; padding: 6px; border-radius: 4px; }
+            .metric-label { font-weight: bold; color: #666; font-size: 11px; }
+            .metric-value { color: #333; font-size: 14px; }
+            .targets { background-color: #E8F5E9; padding: 10px; border-radius: 5px; margin: 10px 0; }
+            .options { background-color: #E3F2FD; padding: 10px; border-radius: 5px; margin: 10px 0; font-size: 13px; }
+            h1 { color: #333; margin: 10px 0; font-size: 24px; }
+            h2 { color: #4CAF50; margin: 5px 0; font-size: 18px; display: inline; }
+            h3 { color: #333; margin: 10px 0 5px 0; font-size: 14px; }
+            .sector-badge { background-color: #666; color: white; padding: 3px 8px; border-radius: 3px; font-size: 11px; }
+            .quick-exit { font-weight: bold; color: #2E7D32; }
         </style>
     </head>
     <body>
         <div class="header">
-            <h1>📈 Daily Bullish Engulfing Signals - """ + datetime.now().strftime('%B %d, %Y') + """</h1>
+            <h1>📈 Bullish Engulfing Signals - """ + datetime.now().strftime('%B %d, %Y') + """</h1>
         </div>
-        <p>Found <strong>""" + str(len(signals)) + """</strong> signal(s) today.</p>
+        <p><strong>""" + str(len(signals)) + """</strong> signal(s) found | <strong>Sectors:</strong> """ + sector_summary + """</p>
     """
     
     for signal in signals_sorted:
         stars = '⭐' * signal['rating']
         rating_class = f"rating-{signal['rating']}"
         
+        # Calculate risk/reward
+        risk_pct = round(((signal['entry_price']/signal['stop_loss'])-1)*100, 1)
+        quick_reward_pct = round(((signal['target_quick']/signal['entry_price'])-1)*100, 1)
+        
         html += f"""
         <div class="signal {rating_class}">
-            <h2>{signal['ticker']}</h2>
-            <div class="stars">{stars} ({signal['rating']}/5)</div>
+            <h2>{signal['ticker']} - {signal['company_name']}</h2>
+            <div class="stars">{stars}</div>
+            <span class="sector-badge">{signal['sector']}</span>
             
-            <h3>📊 Signal Details</h3>
-            <table>
-                <tr>
-                    <td class="label">Current Price:</td>
-                    <td>${signal['current_price']}</td>
-                </tr>
-                <tr>
-                    <td class="label">Engulfing Body Size:</td>
-                    <td>{signal['body_size_pct']}%</td>
-                </tr>
-                <tr>
-                    <td class="label">Volume Ratio:</td>
-                    <td>{signal['volume_ratio']}x average</td>
-                </tr>
-                <tr>
-                    <td class="label">Red Days Before:</td>
-                    <td>{signal['red_days_before']} days</td>
-                </tr>
-                <tr>
-                    <td class="label">Distance from 50-day MA:</td>
-                    <td>{signal['distance_from_ma50']}%</td>
-                </tr>
-            </table>
+            <div class="company-info">
+                {signal['description']}
+            </div>
             
-            <h3>🎯 Trading Guidance</h3>
-            <table>
-                <tr>
-                    <td class="label">Entry Price:</td>
-                    <td>${signal['entry_price']}</td>
-                </tr>
-                <tr>
-                    <td class="label">Target Price:</td>
-                    <td>${signal['target_price']} (+{round(((signal['target_price']/signal['entry_price'])-1)*100, 1)}%)</td>
-                </tr>
-                <tr>
-                    <td class="label">Stop Loss:</td>
-                    <td>${signal['stop_loss']} (-{round(((signal['entry_price']/signal['stop_loss'])-1)*100, 1)}%)</td>
-                </tr>
-                <tr>
-                    <td class="label">Weekly Resistance:</td>
-                    <td>${signal['weekly_resistance']}</td>
-                </tr>
-                <tr>
-                    <td class="label">ATR (14-day):</td>
-                    <td>${signal['atr']}</td>
-                </tr>
-            </table>
+            <div class="metrics">
+                <div class="metric">
+                    <div class="metric-label">CURRENT PRICE</div>
+                    <div class="metric-value">${signal['current_price']}</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-label">ATR (14-DAY)</div>
+                    <div class="metric-value">${signal['atr']}</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-label">BODY SIZE</div>
+                    <div class="metric-value">{signal['body_size_pct']}%</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-label">VOLUME RATIO</div>
+                    <div class="metric-value">{signal['volume_ratio']}x avg</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-label">vs 50-DAY MA</div>
+                    <div class="metric-value">{signal['distance_from_ma50']}%</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-label">WEEKLY HIGH</div>
+                    <div class="metric-value">${signal['weekly_resistance']}</div>
+                </div>
+            </div>
             
-            <h3>📝 Options Suggestions (2-4 weeks)</h3>
-            <table>
-                <tr>
-                    <td class="label">Suggested Expirations:</td>
-                    <td>{', '.join(signal['exp_dates'])}</td>
-                </tr>
-                <tr>
-                    <td class="label">ITM Strike:</td>
-                    <td>${signal['suggested_strikes']['ITM']}</td>
-                </tr>
-                <tr>
-                    <td class="label">ATM Strike:</td>
-                    <td>${signal['suggested_strikes']['ATM']}</td>
-                </tr>
-                <tr>
-                    <td class="label">OTM Strike:</td>
-                    <td>${signal['suggested_strikes']['OTM']}</td>
-                </tr>
-            </table>
+            <div class="targets">
+                <h3>🎯 Trading Plan (3-5 Day Hold)</h3>
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 8px;">
+                    <div>
+                        <strong>Entry:</strong> ${signal['entry_price']}
+                    </div>
+                    <div class="quick-exit">
+                        <strong>Target:</strong> ${signal['target_quick']} (+{quick_reward_pct}%)
+                    </div>
+                    <div>
+                        <strong>Stop:</strong> ${signal['stop_loss']} (-{risk_pct}%)
+                    </div>
+                </div>
+                <div style="margin-top: 8px; font-size: 12px; color: #666;">
+                    Extended target if holding longer: ${signal['target_extended']} | Risk/Reward: ~{round(quick_reward_pct/risk_pct, 1)}:1
+                </div>
+            </div>
             
-            <p><em>Note: Always verify current option prices and implied volatility before trading. Consider your risk tolerance and position sizing.</em></p>
+            <div class="options">
+                <h3>📝 Options (1-2 Week Exp: {', '.join(signal['exp_dates'])})</h3>
+                <div style="margin-top: 5px;">
+                    <strong>⭐ Recommended ATM:</strong> ${signal['suggested_strikes']['ATM']} | 
+                    <strong>ITM:</strong> ${signal['suggested_strikes']['ITM']} | 
+                    <strong>OTM:</strong> ${signal['suggested_strikes']['OTM']}
+                </div>
+                <div style="margin-top: 5px; font-size: 12px; color: #555;">
+                    Est. profit if target hit in 3-4 days: ~{signal['expected_profit_pct']}% (ATM calls)
+                </div>
+            </div>
         </div>
         """
     
     html += """
         <hr>
-        <p style="color: #666; font-size: 12px;">
+        <p style="color: #666; font-size: 11px; margin-top: 20px;">
             <strong>Disclaimer:</strong> This is automated technical analysis for educational purposes. 
             Not financial advice. Always do your own research and consult with a financial advisor.
         </p>
