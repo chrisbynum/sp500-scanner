@@ -34,28 +34,6 @@ def check_bullish_engulfing(ticker):
         stock = yf.Ticker(ticker)
         df = stock.history(period='60d')
         
-        # Get company info with error handling
-        try:
-            info = stock.info
-            company_name = info.get('longName', ticker)
-            sector = info.get('sector', 'N/A')
-            business_summary = info.get('longBusinessSummary', '')
-            
-            # Truncate business summary to 1-2 sentences (around 150 chars)
-            if business_summary:
-                sentences = business_summary.split('. ')
-                if len(sentences) > 1:
-                    business_summary = '. '.join(sentences[:2]) + '.'
-                if len(business_summary) > 200:
-                    business_summary = business_summary[:197] + '...'
-            else:
-                business_summary = 'No description available.'
-        except Exception as e:
-            print(f"Warning: Could not fetch company info for {ticker}: {str(e)}")
-            company_name = ticker
-            sector = 'N/A'
-            business_summary = 'Company information unavailable.'
-        
         if len(df) < 25:  # Need enough data
             return None
         
