@@ -89,8 +89,8 @@ def check_bullish_engulfing(ticker):
         if body_size_pct >= 0.8 and volume_ratio >= 1.1:
             print(f"  Near miss - {ticker}: body={body_size_pct:.2f}%, vol={volume_ratio:.2f}x")
         
-        # Check if minimum criteria met
-        if body_size_pct < 1.0 or volume_ratio < 1.2:
+        # Check if minimum criteria met - slightly relaxed for real market conditions
+        if body_size_pct < 0.8 or volume_ratio < 1.15:
             return None
         
         # Distance from 50-day MA
@@ -162,15 +162,17 @@ def calculate_rating(body_size_pct, volume_ratio, distance_from_ma):
         score += 1.5
     elif volume_ratio >= 1.2:
         score += 1
+    elif volume_ratio >= 1.15:
+        score += 0.5
     
     # Body size scoring (max 2 points)
-    if body_size_pct >= 3.0:
+    if body_size_pct >= 2.5:
         score += 2
-    elif body_size_pct >= 2.0:
-        score += 1.5
     elif body_size_pct >= 1.5:
-        score += 1
+        score += 1.5
     elif body_size_pct >= 1.0:
+        score += 1
+    elif body_size_pct >= 0.8:
         score += 0.5
     
     # Distance from MA50 scoring (max 1 point)
