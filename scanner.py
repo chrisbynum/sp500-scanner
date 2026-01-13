@@ -85,6 +85,10 @@ def check_bullish_engulfing(ticker):
         body_size_pct = ((last_day['Close'] - last_day['Open']) / last_day['Open']) * 100
         volume_ratio = last_day['Volume'] / last_day['Avg_Volume']
         
+        # Debug: Print near-misses
+        if body_size_pct >= 0.8 and volume_ratio >= 1.1:
+            print(f"  Near miss - {ticker}: body={body_size_pct:.2f}%, vol={volume_ratio:.2f}x")
+        
         # Check if minimum criteria met
         if body_size_pct < 1.0 or volume_ratio < 1.2:
             return None
@@ -425,16 +429,33 @@ def main():
     tickers = get_sp500_tickers()
     print(f"Scanning {len(tickers)} tickers...")
     
-    # Scan all tickers
+    # Scan all tickers with detailed logging
     signals = []
+    pattern_stats = {
+        'total_scanned': 0,
+        'had_3_red_days': 0,
+        'had_engulfing': 0,
+        'failed_volume': 0,
+        'failed_body_size': 0,
+        'passed_all': 0
+    }
+    
     for i, ticker in enumerate(tickers):
         if (i + 1) % 50 == 0:
             print(f"Progress: {i + 1}/{len(tickers)} tickers scanned...")
         
         signal = check_bullish_engulfing(ticker)
+        pattern_stats['total_scanned'] += 1
+        
         if signal:
             signals.append(signal)
+            pattern_stats['passed_all'] += 1
             print(f"✓ Signal found: {ticker} ({signal['rating']} stars)")
+    
+    print(f"\n=== SCAN STATISTICS ===")
+    print(f"Total tickers scanned: {pattern_stats['total_scanned']}")
+    print(f"Signals found: {len(signals)}")
+    print(f"======================\n")
     
     print(f"\nScan complete! Found {len(signals)} signals.")
     
